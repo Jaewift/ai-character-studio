@@ -3,8 +3,6 @@ import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import OpenAI from "openai";
-import Anthropic from "@anthropic-ai/sdk";
 import { GoogleGenAI } from "@google/genai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -96,83 +94,105 @@ ${text}
     });
   });
 
-  // API Routes
-  app.post("/api/proxy-chat", async (req, res) => {
-    const { provider: rawProvider, model, messages, systemInstruction, apiKey } = req.body;
-    let provider = typeof rawProvider === "string" ? rawProvider.toLowerCase().trim() : rawProvider;
-    if (!provider && typeof model === "string" && model.toLowerCase().startsWith("gemini")) {
-      provider = "gemini";
+  // 캐릭터 응답 평가: 일관성·캐릭터답게 점수 (1~5)
+  app.post("/api/evaluate-response", async (req, res) => {
+    const { characterConfig, context, userMessage, botResponse } = req.body;
+    if (!characterConfig || !botResponse) {
+      return res.status(400).json({ error: "characterConfig, userMessage, botResponse가 필요합니다." });
     }
 
-    console.log(`Proxying request to ${provider} (${model})`);
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: "GEMINI_API_KEY가 설정되지 않았습니다." });
+    }
+
+    const char = characterConfig;
+    const ctx = context || {};
+    const prompt = `당신은 Big 5와 상황(Context) 토큰 기반 AI 캐릭터 챗봇의 응답 품질을 평가하는 심사위원입니다.
+
+[캐릭터 설정]
+- 이름: ${char.characterName}
+- 페르소나: ${char.persona}
+- Big 5: O${char.big5?.openness ?? 50} C${char.big5?.conscientiousness ?? 50} E${char.big5?.extraversion ?? 50} A${char.big5?.agreeableness ?? 50} N${char.big5?.neuroticism ?? 50}
+
+[당시 상황]
+- Situation: ${ctx.situation ?? "-"}
+- Interlocutor: ${ctx.interlocutor ?? "-"}
+- Goal: ${ctx.objective ?? "-"}
+
+[사용자 발화]
+${userMessage || "(없음)"}
+
+[캐릭터(봇) 응답]
+${botResponse}
+
+다음 두 가지를 1~5 점수로 평가하고, 한 줄 피드백을 작성하세요.
+- consistencyScore: 설정된 성격·Big 5·상황에 비추어 응답이 얼마나 일관적인가? (1=전혀 아님, 5=매우 일관적)
+- characterScore: 해당 캐릭터답게 말하고 행동했는가? (1=캐릭터 붕괴/이탈, 5=완전히 캐릭터에 부합)
+- feedback: 한 줄 한글 코멘트 (예: "상황에 맞게 냉정한 말투를 유지함.")
+
+다음 JSON 형식으로만 응답하세요. 다른 텍스트는 붙이지 마세요.
+{"consistencyScore": 1~5, "characterScore": 1~5, "feedback": "한 줄 피드백"}`;
 
     try {
-      if (provider === "gemini") {
-        const geminiKey = process.env.GEMINI_API_KEY || apiKey;
-        if (!geminiKey) {
-          return res.status(500).json({ error: "GEMINI_API_KEY가 설정되지 않았습니다. .env.local에 설정하세요." });
-        }
-        const ai = new GoogleGenAI({ apiKey: geminiKey });
-        const userContent = Array.isArray(messages) && messages.length > 0
-          ? messages[messages.length - 1]?.content ?? ""
-          : "";
-        const response = await ai.models.generateContent({
-          model: model || "gemini-2.0-flash",
-          contents: userContent,
-          config: {
-            systemInstruction: systemInstruction || "",
-          },
-        });
-        const text = response.text?.trim() ?? "대답을 받지 못했습니다.";
-        return res.json({
-          text,
-          metadata: { tokenUsage: response.usageMetadata?.totalTokenCount ?? 0 },
-        });
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-2.0-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.2,
+        },
+      });
+      let raw = response.text?.trim() || "{}";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) raw = jsonMatch[0];
+      const parsed = JSON.parse(raw);
+      const consistencyScore = Math.min(5, Math.max(1, Number(parsed.consistencyScore) || 3));
+      const characterScore = Math.min(5, Math.max(1, Number(parsed.characterScore) || 3));
+      return res.json({
+        consistencyScore,
+        characterScore,
+        feedback: parsed.feedback || "",
+      });
+    } catch (e: any) {
+      console.error("Evaluate response error:", e);
+      return res.status(500).json({
+        error: e.message || "평가 중 오류가 발생했습니다.",
+        consistencyScore: 3,
+        characterScore: 3,
+        feedback: "평가 API 오류로 기본값 적용",
+      });
+    }
+  });
+
+  // API Routes (Gemini only)
+  app.post("/api/proxy-chat", async (req, res) => {
+    const { model, messages, systemInstruction, apiKey } = req.body;
+
+    try {
+      const geminiKey = process.env.GEMINI_API_KEY || apiKey;
+      if (!geminiKey) {
+        return res.status(500).json({ error: "GEMINI_API_KEY가 설정되지 않았습니다. .env.local에 설정하세요." });
       }
-
-      if (provider === 'openai' || provider === 'nvidia') {
-        const client = new OpenAI({
-          apiKey: apiKey || (provider === 'openai' ? process.env.OPENAI_API_KEY : process.env.NVIDIA_API_KEY),
-          baseURL: provider === 'nvidia' ? "https://integrate.api.nvidia.com/v1" : undefined
-        });
-
-        const response = await client.chat.completions.create({
-          model: model,
-          messages: [
-            { role: "system", content: systemInstruction },
-            ...messages
-          ],
-        });
-
-        return res.json({ 
-          text: response.choices[0].message.content,
-          metadata: { tokenUsage: response.usage?.total_tokens }
-        });
-      }
-
-      if (provider === "anthropic") {
-        const client = new Anthropic({
-          apiKey: apiKey || process.env.ANTHROPIC_API_KEY,
-        });
-
-        const response = await client.messages.create({
-          model: model,
-          max_tokens: 1024,
-          system: systemInstruction,
-          messages: messages,
-        });
-
-        return res.json({ 
-          text: response.content[0].type === 'text' ? response.content[0].text : "Non-text response",
-          metadata: { tokenUsage: response.usage.input_tokens + response.usage.output_tokens }
-        });
-      }
-
-      res.status(400).json({
-        error: `Unsupported provider: "${provider}" (지원: gemini, openai, anthropic, nvidia)`,
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+      const userContent = Array.isArray(messages) && messages.length > 0
+        ? messages[messages.length - 1]?.content ?? ""
+        : "";
+      const response = await ai.models.generateContent({
+        model: model || "gemini-2.0-flash",
+        contents: userContent,
+        config: {
+          systemInstruction: systemInstruction || "",
+        },
+      });
+      const text = response.text?.trim() ?? "대답을 받지 못했습니다.";
+      return res.json({
+        text,
+        metadata: { tokenUsage: response.usageMetadata?.totalTokenCount ?? 0 },
       });
     } catch (error: any) {
-      console.error(`Error calling ${provider}:`, error);
+      console.error("Error calling Gemini:", error);
       res.status(500).json({ error: error.message || "Internal Server Error" });
     }
   });

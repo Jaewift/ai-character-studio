@@ -25,9 +25,9 @@ import {
   Cpu,
   Layers,
   Key,
-  Lock,
   FileText,
-  Sparkles
+  Sparkles,
+  RotateCcw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -46,7 +46,15 @@ import {
 } from 'recharts';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { CharacterConfig, ContextConfig, generateSystemPrompt, getChatResponse, ApiKeys, extractCharacterProfile, type ExtractedProfile } from './services/aiService';
+import { CharacterConfig, ContextConfig, generateSystemPrompt, getChatResponse, ApiKeys, extractCharacterProfile, evaluateResponse, type ExtractedProfile, type EvaluationResult } from './services/aiService';
+
+/** 채팅 1회분 평가 이력 (테스트할수록 누적) */
+export interface EvaluationRecord extends EvaluationResult {
+  userMessage: string;
+  botResponse: string;
+  situation: string;
+  timestamp: string;
+}
 
 // 프로파일러용 예시: 시놉시스 / 대본 / 캐릭터 소개 (한 번에 불러오기)
 const PROFILER_EXAMPLE = {
@@ -212,11 +220,7 @@ export default function App() {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   // Advanced Technical State
-  const [apiKeys, setApiKeys] = useState<ApiKeys>({
-    openai: '',
-    anthropic: '',
-    nvidia: ''
-  });
+  const [apiKeys, setApiKeys] = useState<ApiKeys>({});
 
   const [ragConfig, setRagConfig] = useState({
     topK: 3,
@@ -237,9 +241,58 @@ export default function App() {
   const [isRedTeaming, setIsRedTeaming] = useState(false);
   const [redTeamResults, setRedTeamResults] = useState<any[]>([]);
 
+  // 성적표: 테스트할수록 누적되는 평가 이력 (Big 5 + 상황 토큰 모델)
+  const [evaluationHistory, setEvaluationHistory] = useState<EvaluationRecord[]>([]);
+  const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  /** AI 응답이 에러 메시지인지 여부 (에러일 때는 평가하지 않음) */
+  const isErrorResponse = (text: string) => {
+    const t = (text || "").trim();
+    return t.startsWith("에러:") || t.includes("오류가 발생") || t.includes("연결할 수 없습니다") || t.includes("API") && t.includes("오류");
+  };
+
+  /** 채팅/반응 생성 후 백그라운드에서 응답 품질 평가 후 성적표 이력에 추가 (에러 응답이면 평가 안 함) */
+  const runEvaluationInBackground = (userMessage: string, botResponse: string) => {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setEvaluatingId(id);
+    evaluateResponse({
+      characterConfig: charConfig,
+      context,
+      userMessage,
+      botResponse,
+    })
+      .then((result) => {
+        setEvaluationHistory((prev) => [
+          ...prev,
+          {
+            ...result,
+            userMessage,
+            botResponse,
+            situation: context.situation,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      })
+      .catch(() => {
+        setEvaluationHistory((prev) => [
+          ...prev,
+          {
+            consistencyScore: 3,
+            characterScore: 3,
+            feedback: "평가 요청 실패",
+            userMessage,
+            botResponse,
+            situation: context.situation,
+            timestamp: new Date().toISOString(),
+          },
+        ]);
+      })
+      .finally(() => setEvaluatingId(null));
+  };
 
   const runExtractProfile = async () => {
     setProfileError(null);
@@ -298,6 +351,9 @@ export default function App() {
       metadata: response.metadata 
     }]);
     setIsTyping(false);
+    if (!mockMode && response.text && !isErrorResponse(response.text)) {
+      runEvaluationInBackground(userMsg, response.text);
+    }
   };
 
   /** 안전 테스트: 공격 유형별 기대 행동에 맞게 AI가 방어했는지 응답 텍스트로 판정 */
@@ -446,63 +502,14 @@ export default function App() {
             </h2>
             <div className="space-y-3">
               <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">AI 서비스 제공자</label>
-                <div className="flex gap-2">
-                  {[
-                    { id: 'gemini', label: 'Gemini' },
-                    { id: 'openai', label: 'OpenAI' },
-                    { id: 'anthropic', label: 'Claude' },
-                    { id: 'nvidia', label: 'NVIDIA' }
-                  ].map((p) => (
-                    <button
-                      key={p.id}
-                      onClick={() => setCharConfig({...charConfig, provider: p.id as any, modelName: p.id === 'gemini' ? 'gemini-2.0-flash' : p.id === 'openai' ? 'gpt-4o' : p.id === 'anthropic' ? 'claude-3-5-sonnet' : 'nvidia/llama-3.1-70b-instruct'})}
-                      className={cn(
-                        "flex-1 py-1.5 rounded-lg border text-[10px] font-bold transition-all",
-                        charConfig.provider === p.id 
-                          ? "bg-zinc-900 border-zinc-900 text-white shadow-md" 
-                          : "bg-white border-zinc-200 text-zinc-500 hover:border-zinc-300"
-                      )}
-                    >
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">모델 선택</label>
+                <label className="text-[10px] text-zinc-400 uppercase font-bold">모델 (Gemini)</label>
                 <select 
                   value={charConfig.modelName}
                   onChange={(e) => setCharConfig({...charConfig, modelName: e.target.value})}
                   className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-emerald-500 transition-colors"
                 >
-                  {charConfig.provider === 'gemini' && (
-                    <>
-                      <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                      <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                    </>
-                  )}
-                  {charConfig.provider === 'openai' && (
-                    <>
-                      <option value="gpt-4o">GPT-4o</option>
-                      <option value="gpt-4-turbo">GPT-4 Turbo</option>
-                      <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                    </>
-                  )}
-                  {charConfig.provider === 'anthropic' && (
-                    <>
-                      <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
-                      <option value="claude-3-opus">Claude 3 Opus</option>
-                      <option value="claude-3-haiku">Claude 3 Haiku</option>
-                    </>
-                  )}
-                  {charConfig.provider === 'nvidia' && (
-                    <>
-                      <option value="nvidia/llama-3.1-405b-instruct">Llama 3.1 405B</option>
-                      <option value="nvidia/llama-3.1-70b-instruct">Llama 3.1 70B</option>
-                      <option value="nvidia/nemotron-4-340b-instruct">Nemotron-4 340B</option>
-                    </>
-                  )}
+                  <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                 </select>
               </div>
               <div className="space-y-1">
@@ -577,52 +584,11 @@ export default function App() {
           {/* API Key Settings */}
           <section className="space-y-4 pt-4 border-t border-zinc-100">
             <h2 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-              <Key size={14} /> API Key 설정
+              <Key size={14} /> API Key
             </h2>
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">OpenAI Key</label>
-                <div className="relative">
-                  <input 
-                    type="password"
-                    value={apiKeys.openai}
-                    onChange={(e) => setApiKeys({...apiKeys, openai: e.target.value})}
-                    placeholder="sk-..."
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-[10px] focus:outline-none focus:border-emerald-500 transition-colors pr-8"
-                  />
-                  <Lock size={10} className="absolute right-2.5 top-3 text-zinc-300" />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">Anthropic Key</label>
-                <div className="relative">
-                  <input 
-                    type="password"
-                    value={apiKeys.anthropic}
-                    onChange={(e) => setApiKeys({...apiKeys, anthropic: e.target.value})}
-                    placeholder="sk-ant-..."
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-[10px] focus:outline-none focus:border-emerald-500 transition-colors pr-8"
-                  />
-                  <Lock size={10} className="absolute right-2.5 top-3 text-zinc-300" />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">NVIDIA Key</label>
-                <div className="relative">
-                  <input 
-                    type="password"
-                    value={apiKeys.nvidia}
-                    onChange={(e) => setApiKeys({...apiKeys, nvidia: e.target.value})}
-                    placeholder="nvapi-..."
-                    className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-[10px] focus:outline-none focus:border-emerald-500 transition-colors pr-8"
-                  />
-                  <Lock size={10} className="absolute right-2.5 top-3 text-zinc-300" />
-                </div>
-              </div>
-              <p className="text-[9px] text-zinc-400 italic leading-tight">
-                * 입력된 키는 브라우저 메모리에만 유지되며, 서버를 통해 해당 AI 서비스로 안전하게 전달됩니다.
-              </p>
-            </div>
+            <p className="text-[9px] text-zinc-500 leading-tight">
+              Gemini API 키는 서버의 <code className="bg-zinc-100 px-1 rounded">.env.local</code> (GEMINI_API_KEY)에 설정됩니다. 별도 입력 없이 사용할 수 있습니다.
+            </p>
           </section>
 
           {/* Advanced Technical Settings */}
@@ -847,6 +813,9 @@ export default function App() {
                         const response = await getChatResponse(systemPrompt, msg, charConfig.architecture, charConfig.provider, charConfig.modelName, apiKeys, mockMode);
                         setMessages(prev => [...prev, { role: 'bot', content: response.text, metadata: response.metadata }]);
                         setIsTyping(false);
+                        if (!mockMode && response.text && !isErrorResponse(response.text)) {
+                          runEvaluationInBackground(msg, response.text);
+                        }
                       }}
                       className="px-4 py-2 bg-amber-500 text-white rounded-xl text-xs font-bold hover:bg-amber-600 shadow-md flex items-center gap-2 disabled:opacity-50"
                     >
@@ -1290,7 +1259,7 @@ export default function App() {
               </motion.div>
             )}
 
-            {/* --- Evaluation Tab --- */}
+            {/* --- Evaluation Tab: 테스트할수록 쌓이는 Big 5 + 상황 토큰 모델 성적 --- */}
             {activeTab === 'evaluation' && (
               <motion.div 
                 key="evaluation"
@@ -1302,165 +1271,143 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <div>
                     <h2 className="text-2xl font-bold text-zinc-900">캐릭터 성적표</h2>
-                    <p className="text-zinc-500 text-sm mt-1">AI가 얼마나 캐릭터답게 행동하는지 점수로 확인해요.</p>
+                    <p className="text-zinc-500 text-sm mt-1">채팅 연습장에서 대화할수록 응답이 자동으로 평가되어 여기에 성적이 쌓입니다. (연습 모드 끄고 테스트 시)</p>
                   </div>
-                  <div className="flex gap-2">
-                    <button className="px-4 py-2 bg-white border border-zinc-200 rounded-lg text-xs font-bold hover:bg-zinc-50 transition-colors shadow-sm">
-                      성적표 다운로드
-                    </button>
-                    <button className="px-4 py-2 bg-emerald-500 text-white rounded-lg text-xs font-bold hover:bg-emerald-600 transition-colors shadow-md shadow-emerald-500/20">
-                      데이터 새로고침
-                    </button>
+                  <div className="flex items-center gap-2">
+                    {evaluatingId && (
+                      <span className="text-xs text-amber-600 font-medium flex items-center gap-1">
+                        <div className="w-3 h-3 border-2 border-amber-500/30 border-t-amber-500 rounded-full animate-spin" />
+                        평가 중…
+                      </span>
+                    )}
+                    <span className="px-4 py-2 bg-zinc-100 rounded-lg text-xs font-bold text-zinc-600">
+                      평가된 대화 <span className="text-emerald-600">{evaluationHistory.length}</span>회
+                    </span>
+                    {evaluationHistory.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setEvaluationHistory([])}
+                        className="px-4 py-2 bg-white border border-zinc-200 rounded-lg text-xs font-bold text-zinc-600 hover:bg-zinc-50 transition-colors shadow-sm flex items-center gap-2"
+                      >
+                        <RotateCcw size={14} /> 평가 초기화
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-6">
-                  {/* Consistency Score */}
-                  <div className="bg-white border border-zinc-200 p-6 rounded-2xl flex flex-col items-center justify-center space-y-4 shadow-sm">
-                    <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">성격 일관성</h3>
-                    <div className="relative w-32 h-32 flex items-center justify-center">
-                      <svg className="w-full h-full transform -rotate-90">
-                        <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-100" />
-                        <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - 0.96)} className="text-emerald-500" />
-                      </svg>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-3xl font-bold text-zinc-900">4.8</span>
-                        <span className="text-[10px] text-zinc-400 font-bold uppercase">/ 5.0</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-zinc-500 text-center font-medium">설정한 성격과 말투를 96% 잘 지키고 있어요.</p>
-                  </div>
-
-                  {/* RAG/Context Specific Metric */}
-                  <div className="bg-white border border-zinc-200 p-6 rounded-2xl flex flex-col items-center justify-center space-y-4 shadow-sm">
-                    <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">
-                      {charConfig.architecture === 'rag' ? '지식 근거 정확도 (Faithfulness)' : '추론 논리성 (Reasoning)'}
-                    </h3>
-                    <div className="relative w-32 h-32 flex items-center justify-center">
-                      <svg className="w-full h-full transform -rotate-90">
-                        <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-100" />
-                        <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - 0.92)} className="text-blue-500" />
-                      </svg>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-3xl font-bold text-zinc-900">92</span>
-                        <span className="text-[10px] text-zinc-400 font-bold uppercase">%</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-zinc-500 text-center font-medium">
-                      {charConfig.architecture === 'rag' 
-                        ? '제공된 지식 베이스에 근거하여 답변한 비율입니다.' 
-                        : '단계별 추론 과정이 논리적으로 연결된 비율입니다.'}
+                {evaluationHistory.length === 0 ? (
+                  <div className="bg-white border border-zinc-200 rounded-2xl p-12 text-center shadow-sm">
+                    <BarChart3 className="mx-auto text-zinc-300 mb-4" size={48} />
+                    <h3 className="text-lg font-bold text-zinc-700 mb-2">아직 평가된 대화가 없습니다</h3>
+                    <p className="text-sm text-zinc-500 max-w-md mx-auto mb-4">
+                      채팅 연습장에서 <strong>연습 모드(Mock)를 끄고</strong> 캐릭터와 대화하거나 &quot;반응 생성&quot;을 사용하면, 각 응답이 자동으로 평가되어 일관성·캐릭터 점수가 여기에 쌓입니다.
                     </p>
+                    <p className="text-xs text-zinc-400">좌측에서 연습 모드를 끄고 대화를 시작해 보세요.</p>
                   </div>
-
-                  {/* Safety Rate */}
-                  <div className="bg-white border border-zinc-200 p-6 rounded-2xl flex flex-col items-center justify-center space-y-4 shadow-sm">
-                    <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">안전 방어율</h3>
-                    <div className="relative w-32 h-32 flex items-center justify-center">
-                      <svg className="w-full h-full transform -rotate-90">
-                        <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-100" />
-                        <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - 0.985)} className="text-red-500" />
-                      </svg>
-                      <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-3xl font-bold text-zinc-900">98.5</span>
-                        <span className="text-[10px] text-zinc-400 font-bold uppercase">%</span>
-                      </div>
-                    </div>
-                    <p className="text-xs text-zinc-500 text-center font-medium">나쁜 말이나 이상한 질문을 아주 잘 막아내고 있어요.</p>
-                  </div>
-                </div>
-
-                {/* Performance Chart */}
-                <div className="bg-white border border-zinc-200 p-6 rounded-2xl space-y-6 shadow-sm">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-sm font-bold uppercase tracking-wider flex items-center gap-2 text-zinc-700">
-                      <Zap size={16} className="text-emerald-500" /> 대답 속도 및 성능 분석
-                    </h3>
-                    <div className="flex gap-4 text-[10px] font-bold uppercase">
-                      <div className="flex items-center gap-1.5 text-emerald-500">
-                        <div className="w-2 h-2 bg-emerald-500 rounded-full" /> 첫 글자 반응 (초)
-                      </div>
-                      <div className="flex items-center gap-1.5 text-blue-500">
-                        <div className="w-2 h-2 bg-blue-500 rounded-full" /> 전체 대답 시간 (초)
-                      </div>
-                    </div>
-                  </div>
-                  <div className="h-64 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={latencyData}>
-                        <defs>
-                          <linearGradient id="colorTtft" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                          </linearGradient>
-                          <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.2}/>
-                            <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f1f1" vertical={false} />
-                        <XAxis dataKey="time" stroke="#a1a1aa" fontSize={10} tickLine={false} axisLine={false} />
-                        <YAxis stroke="#a1a1aa" fontSize={10} tickLine={false} axisLine={false} />
-                        <Tooltip 
-                          contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e4e4e7', borderRadius: '8px', fontSize: '10px', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                          itemStyle={{ padding: '2px 0' }}
-                        />
-                        <Area type="monotone" dataKey="ttft" stroke="#10b981" fillOpacity={1} fill="url(#colorTtft)" strokeWidth={2} />
-                        <Area type="monotone" dataKey="latency" stroke="#3b82f6" fillOpacity={1} fill="url(#colorLatency)" strokeWidth={2} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-
-                {/* Trait Distribution */}
-                <div className="grid grid-cols-2 gap-6">
-                  <div className="bg-white border border-zinc-200 p-6 rounded-2xl space-y-4 shadow-sm">
-                    <h3 className="text-sm font-bold uppercase tracking-wider text-zinc-700">성격 반영도</h3>
-                    <div className="h-48">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={[
-                          { name: '개방', val: charConfig.big5.openness },
-                          { name: '성실', val: charConfig.big5.conscientiousness },
-                          { name: '외향', val: charConfig.big5.extraversion },
-                          { name: '우호', val: charConfig.big5.agreeableness },
-                          { name: '신경', val: charConfig.big5.neuroticism },
-                        ]}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#f1f1f1" vertical={false} />
-                          <XAxis dataKey="name" stroke="#a1a1aa" fontSize={10} tickLine={false} axisLine={false} />
-                          <YAxis hide />
-                          <Tooltip 
-                            cursor={{ fill: '#f8f8f8' }}
-                            contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e4e4e7', borderRadius: '8px', fontSize: '10px', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
-                          />
-                          <Bar dataKey="val" radius={[4, 4, 0, 0]}>
-                            {consistencyData.map((entry, index) => (
-                              <Cell key={`cell-${index}`} fill={['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6'][index % 5]} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                  <div className="bg-white border border-zinc-200 p-6 rounded-2xl space-y-4 shadow-sm">
-                    <h3 className="text-sm font-bold uppercase tracking-wider text-zinc-700">최근 활동 기록</h3>
-                    <div className="space-y-3">
-                      {[
-                        { time: '10:24', event: '안전 장치 작동: 이상 질문 차단', status: '차단됨' },
-                        { time: '10:21', event: '캐릭터 일관성 검사 완료', status: '4.9/5.0' },
-                        { time: '10:18', event: '새로운 대화 시작', status: '정상' },
-                        { time: '10:15', event: '시스템 설정 업데이트', status: '성공' },
-                      ].map((log, i) => (
-                        <div key={i} className="flex items-center justify-between text-[11px] border-b border-zinc-100 pb-2 last:border-0">
-                          <div className="flex items-center gap-3">
-                            <span className="text-zinc-400 font-mono">{log.time}</span>
-                            <span className="text-zinc-600 font-medium">{log.event}</span>
+                ) : (
+                  <>
+                    {/* 평균 점수 카드 */}
+                    {(() => {
+                      const avgConsistency = evaluationHistory.length
+                        ? evaluationHistory.reduce((s, e) => s + e.consistencyScore, 0) / evaluationHistory.length
+                        : 0;
+                      const avgCharacter = evaluationHistory.length
+                        ? evaluationHistory.reduce((s, e) => s + e.characterScore, 0) / evaluationHistory.length
+                        : 0;
+                      const consistencyPct = (avgConsistency / 5) * 100;
+                      const characterPct = (avgCharacter / 5) * 100;
+                      return (
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
+                          <MetricCard title="평가된 대화 수" value={evaluationHistory.length} sub="테스트할수록 누적" icon={BarChart3} color="bg-zinc-500" />
+                          <div className="bg-white border border-zinc-200 p-6 rounded-2xl flex flex-col items-center justify-center space-y-4 shadow-sm">
+                            <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">성격 일관성 (평균)</h3>
+                            <div className="relative w-32 h-32 flex items-center justify-center">
+                              <svg className="w-full h-full transform -rotate-90">
+                                <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-100" />
+                                <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - consistencyPct / 100)} className="text-emerald-500" />
+                              </svg>
+                              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                <span className="text-3xl font-bold text-zinc-900">{avgConsistency.toFixed(1)}</span>
+                                <span className="text-[10px] text-zinc-400 font-bold uppercase">/ 5.0</span>
+                              </div>
+                            </div>
+                            <p className="text-xs text-zinc-500 text-center font-medium">Big 5·상황에 맞게 일관되게 대답했는지</p>
                           </div>
-                          <span className="text-emerald-600 font-bold">{log.status}</span>
+                          <div className="bg-white border border-zinc-200 p-6 rounded-2xl flex flex-col items-center justify-center space-y-4 shadow-sm">
+                            <h3 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">캐릭터답게 (평균)</h3>
+                            <div className="relative w-32 h-32 flex items-center justify-center">
+                              <svg className="w-full h-full transform -rotate-90">
+                                <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-100" />
+                                <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - characterPct / 100)} className="text-blue-500" />
+                              </svg>
+                              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                                <span className="text-3xl font-bold text-zinc-900">{avgCharacter.toFixed(1)}</span>
+                                <span className="text-[10px] text-zinc-400 font-bold uppercase">/ 5.0</span>
+                              </div>
+                            </div>
+                            <p className="text-xs text-zinc-500 text-center font-medium">캐릭터로 잘 연기했는지</p>
+                          </div>
                         </div>
-                      ))}
+                      );
+                    })()}
+
+                    {/* 점수 추이 차트 */}
+                    <div className="bg-white border border-zinc-200 p-6 rounded-2xl space-y-6 shadow-sm">
+                      <h3 className="text-sm font-bold uppercase tracking-wider text-zinc-700">평가 점수 추이 (최근 순)</h3>
+                      <div className="h-56 w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart
+                            data={[...evaluationHistory].reverse().map((e, i) => ({
+                              index: evaluationHistory.length - i,
+                              consistency: e.consistencyScore,
+                              character: e.characterScore,
+                              label: `#${evaluationHistory.length - i}`,
+                            }))}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#f1f1f1" vertical={false} />
+                            <XAxis dataKey="label" stroke="#a1a1aa" fontSize={10} tickLine={false} axisLine={false} />
+                            <YAxis domain={[0, 5]} stroke="#a1a1aa" fontSize={10} tickLine={false} axisLine={false} />
+                            <Tooltip contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e4e4e7', borderRadius: '8px', fontSize: '10px' }} />
+                            <Line type="monotone" dataKey="consistency" name="일관성" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
+                            <Line type="monotone" dataKey="character" name="캐릭터답게" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
                     </div>
-                  </div>
-                </div>
+
+                    {/* 최근 평가 목록 */}
+                    <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm">
+                      <div className="p-4 border-b border-zinc-200 bg-zinc-50">
+                        <h3 className="text-xs font-bold text-zinc-700 uppercase">최근 평가 기록</h3>
+                      </div>
+                      <ul className="divide-y divide-zinc-100 max-h-96 overflow-y-auto">
+                        {[...evaluationHistory].reverse().slice(0, 20).map((record, i) => (
+                          <li key={`${record.timestamp}-${i}`} className="p-4 hover:bg-zinc-50 transition-colors">
+                            <div className="flex items-start justify-between gap-4">
+                              <div className="flex-1 min-w-0">
+                                <p className="text-[10px] text-zinc-400 font-bold uppercase mb-1">{record.situation || "상황"}</p>
+                                <p className="text-xs text-zinc-600 truncate" title={record.userMessage}>👤 {record.userMessage}</p>
+                                <p className="text-xs text-zinc-500 truncate mt-0.5" title={record.botResponse}>🤖 {record.botResponse}</p>
+                                {record.feedback && <p className="text-xs text-emerald-600 mt-1 italic">{record.feedback}</p>}
+                              </div>
+                              <div className="flex shrink-0 gap-3 text-right">
+                                <div>
+                                  <p className="text-[10px] text-zinc-400 uppercase">일관성</p>
+                                  <p className="text-lg font-bold text-emerald-600">{record.consistencyScore.toFixed(1)}</p>
+                                </div>
+                                <div>
+                                  <p className="text-[10px] text-zinc-400 uppercase">캐릭터</p>
+                                  <p className="text-lg font-bold text-blue-600">{record.characterScore.toFixed(1)}</p>
+                                </div>
+                              </div>
+                            </div>
+                            <p className="text-[10px] text-zinc-400 mt-2">{new Date(record.timestamp).toLocaleString('ko-KR')}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </>
+                )}
               </motion.div>
             )}
             {/* --- Cost Tab --- */}

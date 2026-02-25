@@ -1,5 +1,5 @@
 export type ArchitectureType = 'prompt' | 'rag' | 'context';
-export type ModelProvider = 'gemini' | 'openai' | 'anthropic' | 'nvidia';
+export type ModelProvider = 'gemini';
 
 export interface CharacterConfig {
   movieTitle: string;
@@ -19,9 +19,7 @@ export interface CharacterConfig {
 }
 
 export interface ApiKeys {
-  openai?: string;
-  anthropic?: string;
-  nvidia?: string;
+  gemini?: string;
 }
 
 export interface ContextConfig {
@@ -84,6 +82,44 @@ export async function extractCharacterProfile(params: {
     throw new Error(err.error || "프로필 추출 실패");
   }
   return res.json();
+}
+
+/** 캐릭터 응답 평가 결과 (1~5점) */
+export interface EvaluationResult {
+  consistencyScore: number;
+  characterScore: number;
+  feedback: string;
+}
+
+export async function evaluateResponse(params: {
+  characterConfig: CharacterConfig;
+  context: ContextConfig;
+  userMessage: string;
+  botResponse: string;
+}): Promise<EvaluationResult> {
+  const res = await fetch("/api/evaluate-response", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      characterConfig: params.characterConfig,
+      context: params.context,
+      userMessage: params.userMessage,
+      botResponse: params.botResponse,
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return {
+      consistencyScore: data.consistencyScore ?? 3,
+      characterScore: data.characterScore ?? 3,
+      feedback: data.feedback || "평가 요청 실패",
+    };
+  }
+  return {
+    consistencyScore: Math.min(5, Math.max(1, Number(data.consistencyScore) ?? 3)),
+    characterScore: Math.min(5, Math.max(1, Number(data.characterScore) ?? 3)),
+    feedback: data.feedback || "",
+  };
 }
 
 export interface ChatResponse {
@@ -166,6 +202,20 @@ export async function getChatResponse(
     return await response.json();
   } catch (error: any) {
     console.error(`${provider} Proxy Error:`, error);
-    return { text: `에러: ${provider} 서비스 호출 중 오류가 발생했습니다. (${error.message})` };
+    const short = toShortError(error?.message, provider);
+    return { text: `에러: ${short}` };
   }
+}
+
+function toShortError(raw: string | undefined, provider: string): string {
+  if (!raw || raw.length < 100) {
+    return raw ? `${provider} 서비스 호출 중 오류가 발생했습니다. (${raw})` : `${provider} 서비스 호출 중 오류가 발생했습니다.`;
+  }
+  if (raw.includes("quota") || raw.includes("429") || raw.includes("RESOURCE_EXHAUSTED")) {
+    return "API 사용 한도 초과. 잠시 후 다시 시도해 주세요.";
+  }
+  if (raw.includes("API key") || raw.includes("invalid") || raw.includes("401")) {
+    return "API 키가 올바르지 않거나 만료되었습니다.";
+  }
+  return "API 호출 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.";
 }
