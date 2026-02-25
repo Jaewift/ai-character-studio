@@ -59,25 +59,41 @@ ${text}
   ]
 }`;
 
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.3,
-        },
-      });
-      let raw = response.text?.trim() || "{}";
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) raw = jsonMatch[0];
-      const parsed = JSON.parse(raw);
-      return res.json(parsed);
-    } catch (e: any) {
-      console.error("Extract profile error:", e);
-      return res.status(500).json({ error: e.message || "프로필 추출 중 오류가 발생했습니다." });
+    const modelsToTry = ["gemini-2.0-flash", "gemini-2.5-flash"];
+    let lastError: any = null;
+
+    for (const model of modelsToTry) {
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            temperature: 0.3,
+          },
+        });
+        let raw = response.text?.trim() || "{}";
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) raw = jsonMatch[0];
+        const parsed = JSON.parse(raw);
+        return res.json(parsed);
+      } catch (e: any) {
+        lastError = e;
+        const errStr = JSON.stringify(e?.message ?? e ?? "");
+        const is429 = e?.status === 429 || errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("quota");
+        if (is429 && modelsToTry.indexOf(model) < modelsToTry.length - 1) {
+          console.warn(`Extract profile: ${model} quota exceeded, trying next model.`);
+          continue;
+        }
+        break;
+      }
     }
+    console.error("Extract profile error:", lastError);
+    return res.status(500).json({
+      error: lastError?.message || "프로필 추출 중 오류가 발생했습니다.",
+      hint: "무료 한도(429)일 수 있습니다. https://ai.google.dev/gemini-api/docs/rate-limits 또는 결제 설정을 확인하세요.",
+    });
   });
 
   // API Routes
@@ -101,7 +117,7 @@ ${text}
           ? messages[messages.length - 1]?.content ?? ""
           : "";
         const response = await ai.models.generateContent({
-          model: model || "gemini-2.5-flash",
+          model: model || "gemini-2.0-flash",
           contents: userContent,
           config: {
             systemInstruction: systemInstruction || "",

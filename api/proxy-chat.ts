@@ -43,7 +43,7 @@ export async function POST(request: Request) {
         ? (messages[messages.length - 1]?.content ?? "")
         : "";
       const response = await ai.models.generateContent({
-        model: model || "gemini-2.5-flash",
+        model: model || "gemini-2.0-flash",
         contents: userContent,
         config: {
           systemInstruction: systemInstruction || "",
