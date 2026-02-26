@@ -22,40 +22,54 @@ export async function POST(request: Request) {
 
   const { model, messages, systemInstruction, apiKey } = body;
 
-  try {
-    const geminiKey = process.env.GEMINI_API_KEY || apiKey;
-    if (!geminiKey) {
-      return Response.json(
-        { error: "GEMINI_API_KEY가 설정되지 않았습니다. Vercel 대시보드에서 Environment Variables에 설정하세요." },
-        { status: 500 }
-      );
-    }
-    const ai = new GoogleGenAI({ apiKey: geminiKey });
-    const userContent = Array.isArray(messages) && messages.length > 0
-      ? (messages[messages.length - 1]?.content ?? "")
-      : "";
-    const response = await ai.models.generateContent({
-      model: model || "gemini-2.0-flash",
-      contents: userContent,
-      config: {
-        systemInstruction: systemInstruction || "",
-      },
-    });
-    const text = response.text?.trim() ?? "대답을 받지 못했습니다.";
-    return Response.json({
-      text,
-      metadata: { tokenUsage: response.usageMetadata?.totalTokenCount ?? 0 },
-    });
-  } catch (error: unknown) {
-    const raw = error instanceof Error ? error.message : "Internal Server Error";
-    const short = toShortErrorMessage(raw);
-    console.error("Error calling Gemini:", error);
-    return Response.json({ error: short }, { status: 500 });
+  const geminiKey = process.env.GEMINI_API_KEY || apiKey;
+  if (!geminiKey) {
+    return Response.json(
+      { error: "GEMINI_API_KEY가 설정되지 않았습니다. Vercel 대시보드에서 Environment Variables에 설정하세요." },
+      { status: 500 }
+    );
   }
+  const ai = new GoogleGenAI({ apiKey: geminiKey });
+  const userContent = Array.isArray(messages) && messages.length > 0
+    ? (messages[messages.length - 1]?.content ?? "")
+    : "";
+  const modelsToTry = [model || "gemini-2.0-flash", "gemini-2.5-flash"].filter(
+    (m, i, arr) => arr.indexOf(m) === i
+  );
+  let lastError: unknown = null;
+  for (const tryModel of modelsToTry) {
+    try {
+      const response = await ai.models.generateContent({
+        model: tryModel,
+        contents: userContent,
+        config: {
+          systemInstruction: systemInstruction || "",
+        },
+      });
+      const text = response.text?.trim() ?? "대답을 받지 못했습니다.";
+      return Response.json({
+        text,
+        metadata: { tokenUsage: response.usageMetadata?.totalTokenCount ?? 0 },
+      });
+    } catch (error: unknown) {
+      lastError = error;
+      const errStr = String((error as Error)?.message ?? error ?? "");
+      const is429 = errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("quota");
+      if (!is429 || tryModel === modelsToTry[modelsToTry.length - 1]) break;
+    }
+  }
+  const raw = lastError instanceof Error ? lastError.message : "Internal Server Error";
+  const short = toShortErrorMessage(raw);
+  console.error("Error calling Gemini:", lastError);
+  return Response.json({ error: short }, { status: 500 });
 }
 
 function toShortErrorMessage(raw: string): string {
-  if (!raw || raw.length < 120) return raw;
+  if (!raw) return "API 호출 중 오류가 발생했습니다.";
+  if (raw.includes("quota") || raw.includes("429") || raw.includes("RESOURCE_EXHAUSTED")) {
+    return "API 사용 한도 초과. 잠시 후 다시 시도해 주세요.";
+  }
+  if (raw.length < 120) return raw;
   try {
     const parsed = JSON.parse(raw) as { error?: { code?: number; message?: string; status?: string } };
     const msg = parsed?.error?.message ?? parsed?.error?.status ?? "";

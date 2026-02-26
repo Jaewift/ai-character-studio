@@ -56,6 +56,31 @@ export interface EvaluationRecord extends EvaluationResult {
   timestamp: string;
 }
 
+const EVALUATION_STORAGE_KEY = "ai-character-studio-evaluation-history";
+
+function loadEvaluationHistoryFromStorage(): EvaluationRecord[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(EVALUATION_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (e: unknown): e is EvaluationRecord =>
+        e != null &&
+        typeof e === "object" &&
+        "consistencyScore" in e &&
+        "characterScore" in e &&
+        "userMessage" in e &&
+        "botResponse" in e &&
+        "situation" in e &&
+        "timestamp" in e
+    );
+  } catch {
+    return [];
+  }
+}
+
 // 프로파일러용 예시: 시놉시스 / 대본 / 캐릭터 소개 (한 번에 불러오기)
 const PROFILER_EXAMPLE = {
   characterName: "강철중",
@@ -139,33 +164,75 @@ function cn(...inputs: ClassValue[]) {
 
 // --- Components ---
 
-const SliderField = ({ label, value, onChange, min = 0, max = 100 }: { label: string, value: number, onChange: (val: number) => void, min?: number, max?: number }) => (
-  <div className="space-y-1">
-    <div className="flex justify-between text-xs font-medium text-zinc-500">
-      <span>{label}</span>
-      <span className="text-emerald-600 font-bold">{value}</span>
+const Logo = () => (
+  <div className="relative w-12 h-12 flex items-center justify-center group">
+    <div className="absolute inset-0 bg-gradient-to-br from-cyan-400/20 to-indigo-600/20 rounded-2xl blur-xl group-hover:opacity-100 opacity-0 transition-opacity" />
+    <div className="relative w-full h-full bg-zinc-900 rounded-2xl flex items-center justify-center shadow-2xl border border-white/10 overflow-hidden">
+      <svg viewBox="0 0 100 100" className="w-8 h-8">
+        <defs>
+          <linearGradient id="logoGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#22d3ee" />
+            <stop offset="50%" stopColor="#818cf8" />
+            <stop offset="100%" stopColor="#c084fc" />
+          </linearGradient>
+        </defs>
+        <path 
+          d="M35 25 C 55 25, 85 35, 85 50 C 85 65, 55 75, 35 75 L 35 25 Z" 
+          fill="none" 
+          stroke="url(#logoGradient)" 
+          strokeWidth="10" 
+          strokeLinecap="round"
+          className="opacity-90"
+        />
+        <path 
+          d="M35 25 L 35 75" 
+          stroke="url(#logoGradient)" 
+          strokeWidth="10" 
+          strokeLinecap="round"
+          className="opacity-40"
+        />
+        <circle cx="50" cy="50" r="7" fill="url(#logoGradient)" />
+      </svg>
     </div>
-    <input 
-      type="range" 
-      min={min} 
-      max={max} 
-      value={value} 
-      onChange={(e) => onChange(parseInt(e.target.value))}
-      className="w-full h-1.5 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-    />
+  </div>
+);
+
+const SliderField = ({ label, value, onChange, min = 0, max = 100 }: { label: string, value: number, onChange: (val: number) => void, min?: number, max?: number }) => (
+  <div className="space-y-3">
+    <div className="flex justify-between text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em]">
+      <span>{label}</span>
+      <span className="text-cyan-400 font-mono">{value}</span>
+    </div>
+    <div className="relative h-1.5 w-full bg-zinc-900 rounded-full overflow-hidden border border-white/5 shadow-inner">
+      <motion.div 
+        className="absolute top-0 left-0 h-full bg-gradient-to-r from-cyan-500 via-indigo-500 to-indigo-600"
+        initial={false}
+        animate={{ width: `${((value - min) / (max - min)) * 100}%` }}
+        transition={{ type: "spring", stiffness: 300, damping: 30 }}
+      />
+      <input 
+        type="range" 
+        min={min} 
+        max={max} 
+        value={value} 
+        onChange={(e) => onChange(parseInt(e.target.value))}
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+      />
+    </div>
   </div>
 );
 
 const MetricCard = ({ title, value, sub, icon: Icon, color }: { title: string, value: string | number, sub: string, icon: any, color: string }) => (
-  <div className="bg-white border border-zinc-200 p-4 rounded-xl shadow-sm">
-    <div className="flex items-start justify-between">
-      <div>
-        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">{title}</p>
-        <h3 className="text-2xl font-bold mt-1 text-zinc-900">{value}</h3>
-        <p className="text-xs text-zinc-500 mt-1">{sub}</p>
+  <div className="relative group overflow-hidden bg-white border border-zinc-100 p-7 rounded-[2rem] shadow-[0_10px_40px_-10px_rgba(0,0,0,0.04)] transition-all hover:shadow-[0_20px_50px_-10px_rgba(0,0,0,0.08)] hover:-translate-y-1">
+    <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-br from-zinc-50 to-transparent opacity-50 rounded-bl-full -mr-10 -mt-10 transition-transform group-hover:scale-110" />
+    <div className="relative flex items-start justify-between">
+      <div className="space-y-3">
+        <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-[0.2em]">{title}</p>
+        <h3 className="text-4xl font-bold text-zinc-900 tracking-tight">{value}</h3>
+        <p className="text-[11px] text-zinc-500 font-medium tracking-tight">{sub}</p>
       </div>
-      <div className={cn("p-2 rounded-lg", color)}>
-        <Icon size={20} className="text-white" />
+      <div className={cn("p-4 rounded-2xl shadow-xl transition-transform group-hover:rotate-6", color)}>
+        <Icon size={24} className="text-white" />
       </div>
     </div>
   </div>
@@ -241,13 +308,22 @@ export default function App() {
   const [isRedTeaming, setIsRedTeaming] = useState(false);
   const [redTeamResults, setRedTeamResults] = useState<any[]>([]);
 
-  // 성적표: 테스트할수록 누적되는 평가 이력 (Big 5 + 상황 토큰 모델)
-  const [evaluationHistory, setEvaluationHistory] = useState<EvaluationRecord[]>([]);
+  // 성적표: 테스트할수록 누적되는 평가 이력 (localStorage에 저장해 새로고침 후에도 유지)
+  const [evaluationHistory, setEvaluationHistory] = useState<EvaluationRecord[]>(loadEvaluationHistoryFromStorage);
   const [evaluatingId, setEvaluatingId] = useState<string | null>(null);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.setItem(EVALUATION_STORAGE_KEY, JSON.stringify(evaluationHistory));
+    } catch {
+      // quota exceeded 등 시 무시
+    }
+  }, [evaluationHistory]);
 
   /** AI 응답이 에러 메시지인지 여부 (에러일 때는 평가하지 않음) */
   const isErrorResponse = (text: string) => {
@@ -480,40 +556,40 @@ export default function App() {
   ];
 
   return (
-    <div className="flex h-screen bg-zinc-50 text-zinc-900 font-sans selection:bg-emerald-500/30">
+    <div className="flex h-screen bg-[#F9FAFB] text-zinc-900 font-sans selection:bg-cyan-500/30">
       
       {/* --- Sidebar: Character Studio --- */}
-      <aside className="w-80 border-r border-zinc-200 flex flex-col bg-white overflow-y-auto shadow-sm">
-        <div className="p-6 border-b border-zinc-100">
-          <div className="flex items-center gap-2 mb-1">
-            <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center shadow-lg shadow-emerald-500/20">
-              <Bot className="text-white" size={20} />
+      <aside className="w-80 border-r border-zinc-200 flex flex-col bg-zinc-950 text-white overflow-y-auto">
+        <div className="p-8 border-b border-white/5">
+          <div className="flex items-center gap-4 mb-2">
+            <Logo />
+            <div>
+              <h1 className="text-xl font-bold tracking-tight bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">DELULU</h1>
+              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em]">AI Studio Pro</p>
             </div>
-            <h1 className="text-lg font-bold tracking-tight">AI 캐릭터 스튜디오</h1>
           </div>
-          <p className="text-[11px] text-zinc-500 font-medium">나만의 영화 속 주인공 만들기</p>
         </div>
 
-        <div className="p-6 space-y-6">
+        <div className="p-8 space-y-8">
           {/* Basic Info */}
-          <section className="space-y-4">
-            <h2 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-              <Settings size={14} /> 기본 정보
+          <section className="space-y-6">
+            <h2 className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] flex items-center gap-2">
+              <Settings size={14} className="text-cyan-400" /> 기본 정보
             </h2>
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">모델 (Gemini)</label>
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">모델 (Gemini)</label>
                 <select 
                   value={charConfig.modelName}
                   onChange={(e) => setCharConfig({...charConfig, modelName: e.target.value})}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-xs focus:outline-none focus:border-emerald-500 transition-colors"
+                  className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-xs focus:outline-none focus:border-cyan-500 transition-all text-zinc-300"
                 >
                   <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
                   <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                 </select>
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">제작 방식 (아키텍처)</label>
+              <div className="space-y-2">
+                <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">제작 방식 (아키텍처)</label>
                 <div className="grid grid-cols-1 gap-2">
                   {[
                     { id: 'prompt', label: '기본 프롬프트', icon: Cpu, desc: '성격 설정 중심' },
@@ -524,55 +600,55 @@ export default function App() {
                       key={arch.id}
                       onClick={() => setCharConfig({...charConfig, architecture: arch.id as any})}
                       className={cn(
-                        "flex items-center gap-3 p-3 rounded-xl border text-left transition-all",
+                        "flex items-center gap-4 p-4 rounded-2xl border text-left transition-all",
                         charConfig.architecture === arch.id 
-                          ? "bg-emerald-50 border-emerald-500 text-emerald-700 shadow-sm" 
-                          : "bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300"
+                          ? "bg-white/10 border-white/20 text-white shadow-lg" 
+                          : "bg-transparent border-white/5 text-zinc-500 hover:border-white/10 hover:text-zinc-300"
                       )}
                     >
-                      <arch.icon size={18} className={charConfig.architecture === arch.id ? "text-emerald-500" : "text-zinc-400"} />
+                      <arch.icon size={20} className={charConfig.architecture === arch.id ? "text-cyan-400" : "text-zinc-600"} />
                       <div>
-                        <p className="text-xs font-bold">{arch.label}</p>
-                        <p className="text-[10px] opacity-70">{arch.desc}</p>
+                        <p className="text-xs font-bold tracking-tight">{arch.label}</p>
+                        <p className="text-[10px] opacity-50 font-medium">{arch.desc}</p>
                       </div>
                     </button>
                   ))}
                 </div>
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">영화 제목</label>
+              <div className="space-y-2">
+                <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">영화 제목</label>
                 <input 
                   value={charConfig.movieTitle}
                   onChange={(e) => setCharConfig({...charConfig, movieTitle: e.target.value})}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                  className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-cyan-500 transition-all text-zinc-300"
                 />
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">캐릭터 이름</label>
+              <div className="space-y-2">
+                <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">캐릭터 이름</label>
                 <input 
                   value={charConfig.characterName}
                   onChange={(e) => setCharConfig({...charConfig, characterName: e.target.value})}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                  className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:border-cyan-500 transition-all text-zinc-300"
                 />
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] text-zinc-400 uppercase font-bold">캐릭터 설명 (페르소나)</label>
+              <div className="space-y-2">
+                <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">캐릭터 설명 (페르소나)</label>
                 <textarea 
                   value={charConfig.persona}
                   onChange={(e) => setCharConfig({...charConfig, persona: e.target.value})}
                   rows={3}
-                  className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors resize-none"
+                  className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-cyan-500 transition-all text-zinc-300 resize-none"
                 />
               </div>
             </div>
           </section>
 
           {/* Big 5 Traits */}
-          <section className="space-y-4">
-            <h2 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-              <Activity size={14} /> 성격 점수 조절
+          <section className="space-y-6">
+            <h2 className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] flex items-center gap-2">
+              <Activity size={14} className="text-indigo-400" /> 성격 점수 조절
             </h2>
-            <div className="space-y-4">
+            <div className="space-y-6">
               <SliderField label="새로운 것에 대한 관심 (개방성)" value={charConfig.big5.openness} onChange={(v) => setCharConfig({...charConfig, big5: {...charConfig.big5, openness: v}})} />
               <SliderField label="꼼꼼하고 계획적인 정도 (성실성)" value={charConfig.big5.conscientiousness} onChange={(v) => setCharConfig({...charConfig, big5: {...charConfig.big5, conscientiousness: v}})} />
               <SliderField label="사람들과 어울리는 정도 (외향성)" value={charConfig.big5.extraversion} onChange={(v) => setCharConfig({...charConfig, big5: {...charConfig.big5, extraversion: v}})} />
@@ -582,49 +658,55 @@ export default function App() {
           </section>
 
           {/* API Key Settings */}
-          <section className="space-y-4 pt-4 border-t border-zinc-100">
-            <h2 className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
+          <section className="space-y-6 pt-8 border-t border-white/5">
+            <h2 className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] flex items-center gap-2">
               <Key size={14} /> API Key
             </h2>
-            <p className="text-[9px] text-zinc-500 leading-tight">
-              Gemini API 키는 서버의 <code className="bg-zinc-100 px-1 rounded">.env.local</code> (GEMINI_API_KEY)에 설정됩니다. 별도 입력 없이 사용할 수 있습니다.
+            <p className="text-[9px] text-zinc-600 italic leading-relaxed font-medium">
+              Gemini API 키는 서버의 <code className="bg-zinc-800 px-1.5 py-0.5 rounded text-cyan-400">.env.local</code> (GEMINI_API_KEY)에 설정됩니다. 별도 입력 없이 사용할 수 있습니다.
             </p>
           </section>
 
           {/* Advanced Technical Settings */}
-          <section className="space-y-4 pt-4 border-t border-zinc-100">
-            <h2 className="text-[10px] font-bold text-emerald-600 uppercase tracking-widest flex items-center gap-2">
+          <section className="space-y-6 pt-8 border-t border-white/5">
+            <h2 className="text-[10px] font-bold text-cyan-400 uppercase tracking-[0.2em] flex items-center gap-2">
               <Zap size={14} /> 고급 기술 설정 ({charConfig.architecture.toUpperCase()})
             </h2>
             
             {charConfig.architecture === 'rag' && (
-              <div className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-[10px] text-zinc-400 uppercase font-bold flex justify-between">
+              <div className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider flex justify-between">
                     검색 결과 개수 (Top-K) 
                     <span className="group relative cursor-help">
-                      <Info size={10} className="inline ml-1 text-zinc-300" />
+                      <Info size={10} className="inline ml-1 text-zinc-500" />
                       <span className="absolute bottom-full right-0 mb-2 w-48 p-2 bg-zinc-800 text-white text-[9px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
                         AI가 대답할 때 참고할 지식 조각의 개수입니다. 많을수록 정확하지만 비용이 늘어납니다.
                       </span>
                     </span>
                     <span>{ragConfig.topK}개</span>
                   </label>
-                  <input 
-                    type="range" min="1" max="5" value={ragConfig.topK}
-                    onChange={(e) => setRagConfig({...ragConfig, topK: parseInt(e.target.value)})}
-                    className="w-full h-1 bg-zinc-200 rounded-lg appearance-none cursor-pointer accent-emerald-500"
-                  />
+                  <div className="relative h-1 w-full bg-zinc-800 rounded-full overflow-hidden">
+                    <motion.div 
+                      className="absolute top-0 left-0 h-full bg-cyan-500"
+                      animate={{ width: `${(ragConfig.topK / 5) * 100}%` }}
+                    />
+                    <input 
+                      type="range" min="1" max="5" value={ragConfig.topK}
+                      onChange={(e) => setRagConfig({...ragConfig, topK: parseInt(e.target.value)})}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                    />
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] text-zinc-400 uppercase font-bold">지식 베이스 (Grounding Data)</label>
-                  <div className="space-y-1">
+                <div className="space-y-3">
+                  <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">지식 베이스 (Grounding Data)</label>
+                  <div className="space-y-2">
                     {ragConfig.knowledgeBase.map((item, i) => (
-                      <div key={i} className="flex items-center gap-2 p-2 bg-zinc-50 border border-zinc-100 rounded-lg text-[10px] text-zinc-600">
-                        <Database size={10} className="text-blue-500" /> {item}
+                      <div key={i} className="flex items-center gap-3 p-3 bg-white/5 border border-white/5 rounded-xl text-[10px] text-zinc-400 font-medium">
+                        <Database size={12} className="text-cyan-400" /> {item}
                       </div>
                     ))}
-                    <button className="w-full py-1.5 border border-dashed border-zinc-300 rounded-lg text-[10px] text-zinc-400 hover:bg-zinc-50 transition-colors">
+                    <button className="w-full py-2.5 border border-dashed border-white/10 rounded-xl text-[10px] text-zinc-500 hover:bg-white/5 hover:text-zinc-300 transition-all">
                       + 문서 추가하기 (PDF, TXT)
                     </button>
                   </div>
@@ -633,12 +715,12 @@ export default function App() {
             )}
 
             {charConfig.architecture === 'context' && (
-              <div className="space-y-4">
+              <div className="space-y-6">
                 <div className="flex items-center justify-between">
-                  <label className="text-[10px] text-zinc-400 uppercase font-bold flex items-center gap-1">
+                  <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider flex items-center gap-1">
                     단계별 추론 (CoT) 활성화
                     <span className="group relative cursor-help">
-                      <Info size={10} className="inline text-zinc-300" />
+                      <Info size={10} className="inline text-zinc-500" />
                       <span className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-zinc-800 text-white text-[9px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
                         Chain of Thought: AI가 대답하기 전에 스스로 생각을 정리하게 하여 논리력을 높입니다.
                       </span>
@@ -646,16 +728,16 @@ export default function App() {
                   </label>
                   <button 
                     onClick={() => setContextConfig({...contextConfig, enableCoT: !contextConfig.enableCoT})}
-                    className={cn("w-8 h-4 rounded-full relative transition-colors", contextConfig.enableCoT ? "bg-emerald-500" : "bg-zinc-300")}
+                    className={cn("w-10 h-5 rounded-full relative transition-all", contextConfig.enableCoT ? "bg-cyan-500 shadow-[0_0_15px_rgba(34,211,238,0.3)]" : "bg-zinc-800")}
                   >
-                    <div className={cn("absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all", contextConfig.enableCoT ? "left-4.5" : "left-0.5")} />
+                    <div className={cn("absolute top-1 w-3 h-3 bg-white rounded-full transition-all", contextConfig.enableCoT ? "left-6" : "left-1")} />
                   </button>
                 </div>
-                <div className="space-y-1">
-                  <label className="text-[10px] text-zinc-400 uppercase font-bold flex items-center gap-1">
+                <div className="space-y-2">
+                  <label className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider flex items-center gap-1">
                     대화 예시 (Few-Shot)
                     <span className="group relative cursor-help">
-                      <Info size={10} className="inline text-zinc-300" />
+                      <Info size={10} className="inline text-zinc-500" />
                       <span className="absolute bottom-full left-0 mb-2 w-48 p-2 bg-zinc-800 text-white text-[9px] rounded-lg opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20">
                         AI에게 몇 가지 대화 예시를 미리 보여주어 말투와 스타일을 학습시킵니다.
                       </span>
@@ -664,12 +746,12 @@ export default function App() {
                   </label>
                   <div className="space-y-2">
                     {contextConfig.examples.map((ex, i) => (
-                      <div key={i} className="p-2 bg-zinc-50 border border-zinc-100 rounded-lg text-[10px] space-y-1">
+                      <div key={i} className="p-3 bg-white/5 border border-white/5 rounded-xl text-[10px] space-y-1">
                         <p className="text-zinc-400 font-bold">Q: {ex.q}</p>
-                        <p className="text-zinc-600 italic">A: {ex.a}</p>
+                        <p className="text-zinc-500 italic">A: {ex.a}</p>
                       </div>
                     ))}
-                    <button className="w-full py-1.5 border border-dashed border-zinc-300 rounded-lg text-[10px] text-zinc-400 hover:bg-zinc-50 transition-colors">
+                    <button className="w-full py-2.5 border border-dashed border-white/10 rounded-xl text-[10px] text-zinc-500 hover:bg-white/5 hover:text-zinc-300 transition-all">
                       + 예시 추가하기
                     </button>
                   </div>
@@ -678,21 +760,21 @@ export default function App() {
             )}
 
             {charConfig.architecture === 'prompt' && (
-              <div className="p-4 bg-zinc-50 rounded-xl border border-zinc-100 text-center">
-                <p className="text-[10px] text-zinc-400 italic">기본 프롬프트 방식은 추가 고급 설정이 필요하지 않습니다.</p>
+              <div className="p-4 bg-white/5 rounded-xl border border-white/5 text-center">
+                <p className="text-[10px] text-zinc-500 italic">기본 프롬프트 방식은 추가 고급 설정이 필요하지 않습니다.</p>
               </div>
             )}
           </section>
         </div>
 
-        <div className="mt-auto p-6 border-t border-zinc-100 bg-zinc-50/50">
+        <div className="mt-auto p-8 border-t border-white/5 bg-white/5">
           <div className="flex items-center justify-between mb-4">
             <span className="text-xs font-bold text-zinc-500">연습 모드 (Mock)</span>
             <button 
               onClick={() => setMockMode(!mockMode)}
               className={cn(
-                "w-10 h-5 rounded-full transition-colors relative",
-                mockMode ? "bg-emerald-500" : "bg-zinc-300"
+                "w-10 h-5 rounded-full transition-all relative",
+                mockMode ? "bg-cyan-500 shadow-[0_0_15px_rgba(34,211,238,0.3)]" : "bg-zinc-800"
               )}
             >
               <div className={cn(
@@ -701,7 +783,7 @@ export default function App() {
               )} />
             </button>
           </div>
-          <p className="text-[10px] text-zinc-400 leading-relaxed font-medium">
+          <p className="text-[10px] text-zinc-500 leading-relaxed font-medium">
             * 연습 모드에서는 AI 비용 없이 가짜 대답으로 테스트해볼 수 있어요.
           </p>
         </div>
@@ -711,8 +793,8 @@ export default function App() {
       <main className="flex-1 flex flex-col bg-white">
         
         {/* Header Tabs */}
-        <header className="h-16 border-b border-zinc-100 flex items-center px-8 justify-between bg-white/80 backdrop-blur-md sticky top-0 z-10">
-          <nav className="flex gap-8">
+        <header className="h-20 border-b border-zinc-200 flex items-center px-12 justify-between bg-white/70 backdrop-blur-2xl sticky top-0 z-10">
+          <nav className="flex gap-12 h-full">
             {[
               { id: 'playground', label: '채팅 연습장', icon: MessageSquare },
               { id: 'profiler', label: '캐릭터 프로파일러', icon: FileText },
@@ -724,8 +806,8 @@ export default function App() {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id as any)}
                 className={cn(
-                  "flex items-center gap-2 text-sm font-bold transition-all relative py-5",
-                  activeTab === tab.id ? "text-emerald-600" : "text-zinc-400 hover:text-zinc-600"
+                  "flex items-center gap-3 text-s font-bold transition-all relative h-full px-1",
+                  activeTab === tab.id ? "text-zinc-950" : "text-zinc-400 hover:text-zinc-600"
                 )}
               >
                 <tab.icon size={16} />
@@ -733,16 +815,16 @@ export default function App() {
                 {activeTab === tab.id && (
                   <motion.div 
                     layoutId="activeTab" 
-                    className="absolute bottom-0 left-0 right-0 h-0.5 bg-emerald-500" 
+                    className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-cyan-500 to-indigo-600" 
                   />
                 )}
               </button>
             ))}
           </nav>
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 px-3 py-1 bg-emerald-50 border border-emerald-100 rounded-full">
-              <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-              <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-tighter">시스템 작동 중</span>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-cyan-50 border border-cyan-100 rounded-full">
+              <div className="w-2 h-2 bg-cyan-500 rounded-full animate-pulse" />
+              <span className="text-[10px] font-bold text-cyan-600 uppercase tracking-tighter">시스템 작동 중</span>
             </div>
           </div>
         </header>
@@ -835,7 +917,7 @@ export default function App() {
                       value={context.situation}
                       onChange={(e) => setContext({...context, situation: e.target.value})}
                       placeholder="예: 비 내리는 카페에서..."
-                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     />
                   </div>
                   <div className="space-y-1">
@@ -846,7 +928,7 @@ export default function App() {
                       value={context.interlocutor}
                       onChange={(e) => setContext({...context, interlocutor: e.target.value})}
                       placeholder="예: 수상한 낯선 사람..."
-                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     />
                   </div>
                   <div className="space-y-1">
@@ -857,7 +939,7 @@ export default function App() {
                       value={context.objective}
                       onChange={(e) => setContext({...context, objective: e.target.value})}
                       placeholder="예: 비밀을 알아내기 위해..."
-                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 </div>
@@ -868,7 +950,7 @@ export default function App() {
                       value={context.background ?? ""}
                       onChange={(e) => setContext({...context, background: e.target.value})}
                       placeholder="예: 강력반 형사, 추출 전문가"
-                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                      className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                     />
                   </div>
                 </div>
@@ -877,14 +959,14 @@ export default function App() {
                 <div className="flex-1 flex flex-col bg-zinc-50 border border-zinc-200 rounded-2xl overflow-hidden min-h-[400px] shadow-sm">
                   <div className="p-4 border-b border-zinc-200 bg-white flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <MessageSquare size={16} className="text-emerald-500" />
+                      <MessageSquare size={16} className="text-cyan-500" />
                       <span className="text-xs font-bold uppercase tracking-wider text-zinc-700">실시간 대화 연습</span>
                     </div>
                     <button 
                       onClick={() => setShowPromptLogic(!showPromptLogic)}
                       className={cn(
                         "text-[10px] font-bold uppercase px-3 py-1 rounded-full border transition-all",
-                        showPromptLogic ? "bg-emerald-500/10 border-emerald-500/50 text-emerald-600" : "bg-zinc-100 border-zinc-200 text-zinc-400"
+                        showPromptLogic ? "bg-cyan-500/10 border-cyan-500/50 text-cyan-600" : "bg-zinc-100 border-zinc-200 text-zinc-400"
                       )}
                     >
                       프롬프트 로직 보기
@@ -908,7 +990,7 @@ export default function App() {
                           <div className={cn(
                             "max-w-[80%] p-4 rounded-2xl text-sm leading-relaxed shadow-sm",
                             msg.role === 'user' 
-                              ? "bg-emerald-500 text-white rounded-tr-none" 
+                              ? "bg-cyan-500 text-white rounded-tr-none" 
                               : "bg-zinc-100 text-zinc-800 rounded-tl-none border border-zinc-200"
                           )}>
                             {msg.content}
@@ -936,7 +1018,7 @@ export default function App() {
                           exit={{ width: 0, opacity: 0 }}
                           className="border-l border-zinc-200 bg-zinc-50 p-6 overflow-y-auto"
                         >
-                          <h3 className="text-xs font-bold text-emerald-600 uppercase mb-4 flex items-center gap-2">
+                          <h3 className="text-xs font-bold text-cyan-600 uppercase mb-4 flex items-center gap-2">
                             <Zap size={14} /> 기술 디버깅 패널
                           </h3>
                           
@@ -988,7 +1070,7 @@ export default function App() {
                             {messages.length > 0 && messages[messages.length-1].metadata?.tokenUsage && (
                               <div className="pt-4 border-t border-zinc-200 flex justify-between items-center text-[10px] text-zinc-400 font-bold">
                                 <span>토큰 사용량</span>
-                                <span className="text-emerald-500">{messages[messages.length-1].metadata.tokenUsage} tokens</span>
+                                <span className="text-cyan-500">{messages[messages.length-1].metadata.tokenUsage} tokens</span>
                               </div>
                             )}
                           </div>
@@ -1005,12 +1087,12 @@ export default function App() {
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
                         placeholder={`${charConfig.characterName}에게 말을 걸어보세요...`}
-                        className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
+                        className="w-full bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 pr-12 text-sm focus:outline-none focus:border-cyan-500 transition-colors"
                       />
                       <button 
                         onClick={handleSendMessage}
                         disabled={!input.trim() || isTyping}
-                        className="absolute right-2 p-2 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-emerald-500/20"
+                        className="absolute right-2 p-2 bg-cyan-500 text-white rounded-lg hover:bg-cyan-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-cyan-500/20"
                       >
                         <Send size={18} />
                       </button>
@@ -1042,7 +1124,7 @@ export default function App() {
                         value={profilerInput.characterName}
                         onChange={(e) => setProfilerInput(prev => ({ ...prev, characterName: e.target.value }))}
                         placeholder="예: 마석도, 강철중"
-                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
+                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500"
                       />
                     </div>
                     <div className="space-y-1">
@@ -1052,7 +1134,7 @@ export default function App() {
                         onChange={(e) => setProfilerInput(prev => ({ ...prev, synopsis: e.target.value }))}
                         placeholder="영화/드라마 시놉시스를 붙여넣으세요."
                         rows={4}
-                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 resize-none"
+                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 resize-none"
                       />
                     </div>
                     <div className="space-y-1">
@@ -1062,7 +1144,7 @@ export default function App() {
                         onChange={(e) => setProfilerInput(prev => ({ ...prev, script: e.target.value }))}
                         placeholder="대본 일부를 붙여넣으면 말투·관계 추출에 도움이 됩니다."
                         rows={4}
-                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 resize-none"
+                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 resize-none"
                       />
                     </div>
                     <div className="space-y-1">
@@ -1072,7 +1154,7 @@ export default function App() {
                         onChange={(e) => setProfilerInput(prev => ({ ...prev, characterIntro: e.target.value }))}
                         placeholder="캐릭터 소개, 인물 설명 등을 입력하세요."
                         rows={3}
-                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500 resize-none"
+                        className="w-full bg-zinc-50 border border-zinc-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-cyan-500 resize-none"
                       />
                     </div>
                     <div className="space-y-2">
@@ -1099,7 +1181,7 @@ export default function App() {
                       <button
                         onClick={runExtractProfile}
                         disabled={profileLoading || (!profilerInput.synopsis && !profilerInput.script && !profilerInput.characterIntro)}
-                        className="flex-1 py-3 bg-emerald-500 text-white rounded-xl font-bold text-sm hover:bg-emerald-600 disabled:opacity-50 flex items-center justify-center gap-2"
+                        className="flex-1 py-3 bg-cyan-500 text-white rounded-xl font-bold text-sm hover:bg-cyan-600 disabled:opacity-50 flex items-center justify-center gap-2"
                       >
                         {profileLoading ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Sparkles size={18} />}
                         분석하기
@@ -1116,7 +1198,7 @@ export default function App() {
                     {extractedProfile ? (
                       <>
                         <div className="p-6 bg-white border border-zinc-200 rounded-2xl shadow-sm space-y-6">
-                          <h3 className="text-sm font-bold text-emerald-600 uppercase flex items-center gap-2">
+                          <h3 className="text-sm font-bold text-cyan-600 uppercase flex items-center gap-2">
                             <Sparkles size={14} /> 추출된 프로필
                           </h3>
                           <div>
@@ -1132,9 +1214,9 @@ export default function App() {
                                 <div key={key} className="flex items-center gap-3">
                                   <span className="text-xs text-zinc-500 w-24">{key === "openness" ? "개방성" : key === "conscientiousness" ? "성실성" : key === "extraversion" ? "외향성" : key === "agreeableness" ? "우호성" : "신경성"}</span>
                                   <div className="flex-1 h-2 bg-zinc-100 rounded-full overflow-hidden">
-                                    <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${extractedProfile.big5[key]}%` }} />
+                                    <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${extractedProfile.big5[key]}%` }} />
                                   </div>
-                                  <span className="text-xs font-bold text-emerald-600 w-8">{extractedProfile.big5[key]}</span>
+                                  <span className="text-xs font-bold text-cyan-600 w-8">{extractedProfile.big5[key]}</span>
                                 </div>
                               ))}
                             </div>
@@ -1213,7 +1295,7 @@ export default function App() {
                   <MetricCard title="탈옥 방어력" value="95%" sub="최근 24시간" icon={ShieldAlert} color="bg-blue-500" />
                   <MetricCard title="욕설 필터링" value="100%" sub="작동 중" icon={AlertTriangle} color="bg-amber-500" />
                   <MetricCard title="세계관 유지력" value="88%" sub="캐릭터성" icon={Zap} color="bg-purple-500" />
-                  <MetricCard title="경쟁사 차단" value="92%" sub="IP 보호" icon={Bot} color="bg-emerald-500" />
+                  <MetricCard title="경쟁사 차단" value="92%" sub="IP 보호" icon={Bot} color="bg-cyan-500" />
                 </div>
 
                 <div className="bg-white border border-zinc-200 rounded-2xl overflow-hidden shadow-sm">
@@ -1243,7 +1325,7 @@ export default function App() {
                             <td className="px-6 py-4">
                               <span className={cn(
                                 "flex items-center gap-1.5 font-bold text-[10px] px-2 py-1 rounded-full",
-                                res.status === '성공' ? "bg-emerald-100 text-emerald-600" : "bg-red-100 text-red-600"
+                                res.status === '성공' ? "bg-cyan-100 text-cyan-600" : "bg-red-100 text-red-600"
                               )}>
                                 {res.status === '성공' ? <CheckCircle2 size={12} /> : <XCircle size={12} />}
                                 {res.status}
@@ -1281,7 +1363,7 @@ export default function App() {
                       </span>
                     )}
                     <span className="px-4 py-2 bg-zinc-100 rounded-lg text-xs font-bold text-zinc-600">
-                      평가된 대화 <span className="text-emerald-600">{evaluationHistory.length}</span>회
+                      평가된 대화 <span className="text-cyan-600">{evaluationHistory.length}</span>회
                     </span>
                     {evaluationHistory.length > 0 && (
                       <button
@@ -1324,7 +1406,7 @@ export default function App() {
                             <div className="relative w-32 h-32 flex items-center justify-center">
                               <svg className="w-full h-full transform -rotate-90">
                                 <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-zinc-100" />
-                                <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - consistencyPct / 100)} className="text-emerald-500" />
+                                <circle cx="64" cy="64" r="58" stroke="currentColor" strokeWidth="8" fill="transparent" strokeDasharray={364.4} strokeDashoffset={364.4 * (1 - consistencyPct / 100)} className="text-cyan-500" />
                               </svg>
                               <div className="absolute inset-0 flex flex-col items-center justify-center">
                                 <span className="text-3xl font-bold text-zinc-900">{avgConsistency.toFixed(1)}</span>
@@ -1388,12 +1470,12 @@ export default function App() {
                                 <p className="text-[10px] text-zinc-400 font-bold uppercase mb-1">{record.situation || "상황"}</p>
                                 <p className="text-xs text-zinc-600 truncate" title={record.userMessage}>👤 {record.userMessage}</p>
                                 <p className="text-xs text-zinc-500 truncate mt-0.5" title={record.botResponse}>🤖 {record.botResponse}</p>
-                                {record.feedback && <p className="text-xs text-emerald-600 mt-1 italic">{record.feedback}</p>}
+                                {record.feedback && <p className="text-xs text-cyan-600 mt-1 italic">{record.feedback}</p>}
                               </div>
                               <div className="flex shrink-0 gap-3 text-right">
                                 <div>
                                   <p className="text-[10px] text-zinc-400 uppercase">일관성</p>
-                                  <p className="text-lg font-bold text-emerald-600">{record.consistencyScore.toFixed(1)}</p>
+                                  <p className="text-lg font-bold text-cyan-600">{record.consistencyScore.toFixed(1)}</p>
                                 </div>
                                 <div>
                                   <p className="text-[10px] text-zinc-400 uppercase">캐릭터</p>
@@ -1425,14 +1507,14 @@ export default function App() {
                     <p className="text-zinc-500 text-sm mt-1">캐릭터 프로필(Big 5)과 상황(Context) 토큰만 사용하는 AI 캐릭터 챗봇의 비용 성능을 확인하세요.</p>
                   </div>
                   <div className="flex gap-2">
-                    <div className="flex items-center gap-2 px-4 py-2 bg-emerald-50 border border-emerald-200 rounded-lg text-xs font-bold text-emerald-700">
-                      대화 1회당 약 <span className="text-emerald-600">$0.0002</span> (Gemini 2.0 Flash 기준)
+                    <div className="flex items-center gap-2 px-4 py-2 bg-cyan-50 border border-cyan-200 rounded-lg text-xs font-bold text-cyan-700">
+                      대화 1회당 약 <span className="text-cyan-600">$0.0002</span> (Gemini 2.0 Flash 기준)
                     </div>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
-                  <MetricCard title="대화 1회당 비용" value="$0.0002" sub="약 0.02¢ · 토큰 기준 추정" icon={Coins} color="bg-emerald-500" />
+                  <MetricCard title="대화 1회당 비용" value="$0.0002" sub="약 0.02¢ · 토큰 기준 추정" icon={Coins} color="bg-cyan-500" />
                   <MetricCard title="1,000회 시뮬레이션" value="$0.20" sub="상황 변수만 바꿔 재호출 시" icon={Zap} color="bg-blue-500" />
                   <MetricCard title="토큰 효율" value="구조화됨" sub="RAG/벡터DB 미사용 · 시스템 프롬프트만" icon={Cpu} color="bg-purple-500" />
                 </div>

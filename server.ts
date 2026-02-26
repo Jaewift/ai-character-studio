@@ -131,70 +131,100 @@ ${botResponse}
 - characterScore: 해당 캐릭터답게 말하고 행동했는가? (1=캐릭터 붕괴/이탈, 5=완전히 캐릭터에 부합)
 - feedback: 한 줄 한글 코멘트 (예: "상황에 맞게 냉정한 말투를 유지함.")
 
-다음 JSON 형식으로만 응답하세요. 다른 텍스트는 붙이지 마세요.
-{"consistencyScore": 1~5, "characterScore": 1~5, "feedback": "한 줄 피드백"}`;
+반드시 아래 JSON만 출력하세요. 다른 설명 없이 JSON 한 줄만.
+{"consistencyScore": 4, "characterScore": 4, "feedback": "한 줄 피드백"}`;
 
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: prompt,
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.2,
-        },
-      });
-      let raw = response.text?.trim() || "{}";
-      const jsonMatch = raw.match(/\{[\s\S]*\}/);
-      if (jsonMatch) raw = jsonMatch[0];
-      const parsed = JSON.parse(raw);
-      const consistencyScore = Math.min(5, Math.max(1, Number(parsed.consistencyScore) || 3));
-      const characterScore = Math.min(5, Math.max(1, Number(parsed.characterScore) || 3));
-      return res.json({
-        consistencyScore,
-        characterScore,
-        feedback: parsed.feedback || "",
-      });
-    } catch (e: any) {
-      console.error("Evaluate response error:", e);
-      return res.status(500).json({
-        error: e.message || "평가 중 오류가 발생했습니다.",
-        consistencyScore: 3,
-        characterScore: 3,
-        feedback: "평가 API 오류로 기본값 적용",
-      });
+    const modelsToTry = ["gemini-2.0-flash", "gemini-2.5-flash"];
+    let lastError: any = null;
+
+    for (const model of modelsToTry) {
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        const response = await ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            temperature: 0.2,
+          },
+        });
+        let raw = (response.text ?? "").trim();
+        if (!raw) {
+          lastError = new Error("Empty response from model");
+          continue;
+        }
+        raw = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) raw = jsonMatch[0];
+        const parsed = JSON.parse(raw);
+        const consistencyScore = Math.min(5, Math.max(1, Number(parsed.consistencyScore) || 3));
+        const characterScore = Math.min(5, Math.max(1, Number(parsed.characterScore) || 3));
+        return res.json({
+          consistencyScore,
+          characterScore,
+          feedback: typeof parsed.feedback === "string" ? parsed.feedback : "",
+        });
+      } catch (e: any) {
+        lastError = e;
+        const errStr = String(e?.message ?? e ?? "");
+        const is429 = errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("quota");
+        if (!is429) {
+          console.error("Evaluate response error:", e);
+          break;
+        }
+        if (model === modelsToTry[modelsToTry.length - 1]) break;
+      }
     }
+
+    console.error("Evaluate response last error:", lastError);
+    return res.status(500).json({
+      error: lastError?.message || "평가 중 오류가 발생했습니다.",
+      consistencyScore: 3,
+      characterScore: 3,
+      feedback: "평가 API 오류로 기본값 적용",
+    });
   });
 
-  // API Routes (Gemini only)
+  // API Routes (Gemini only) — 429 시 다른 모델로 재시도 (프로파일러와 동일)
   app.post("/api/proxy-chat", async (req, res) => {
     const { model, messages, systemInstruction, apiKey } = req.body;
 
-    try {
-      const geminiKey = process.env.GEMINI_API_KEY || apiKey;
-      if (!geminiKey) {
-        return res.status(500).json({ error: "GEMINI_API_KEY가 설정되지 않았습니다. .env.local에 설정하세요." });
-      }
-      const ai = new GoogleGenAI({ apiKey: geminiKey });
-      const userContent = Array.isArray(messages) && messages.length > 0
-        ? messages[messages.length - 1]?.content ?? ""
-        : "";
-      const response = await ai.models.generateContent({
-        model: model || "gemini-2.0-flash",
-        contents: userContent,
-        config: {
-          systemInstruction: systemInstruction || "",
-        },
-      });
-      const text = response.text?.trim() ?? "대답을 받지 못했습니다.";
-      return res.json({
-        text,
-        metadata: { tokenUsage: response.usageMetadata?.totalTokenCount ?? 0 },
-      });
-    } catch (error: any) {
-      console.error("Error calling Gemini:", error);
-      res.status(500).json({ error: error.message || "Internal Server Error" });
+    const geminiKey = process.env.GEMINI_API_KEY || apiKey;
+    if (!geminiKey) {
+      return res.status(500).json({ error: "GEMINI_API_KEY가 설정되지 않았습니다. .env.local에 설정하세요." });
     }
+    const ai = new GoogleGenAI({ apiKey: geminiKey });
+    const userContent = Array.isArray(messages) && messages.length > 0
+      ? messages[messages.length - 1]?.content ?? ""
+      : "";
+    const modelsToTry = [model || "gemini-2.0-flash", "gemini-2.5-flash"].filter(
+      (m, i, arr) => arr.indexOf(m) === i
+    );
+    let lastError = null;
+    for (const tryModel of modelsToTry) {
+      try {
+        const response = await ai.models.generateContent({
+          model: tryModel,
+          contents: userContent,
+          config: {
+            systemInstruction: systemInstruction || "",
+          },
+        });
+        const text = response.text?.trim() ?? "대답을 받지 못했습니다.";
+        return res.json({
+          text,
+          metadata: { tokenUsage: response.usageMetadata?.totalTokenCount ?? 0 },
+        });
+      } catch (error) {
+        lastError = error;
+        const errStr = String(error?.message ?? error ?? "");
+        const is429 = errStr.includes("429") || errStr.includes("RESOURCE_EXHAUSTED") || errStr.includes("quota");
+        if (!is429 || tryModel === modelsToTry[modelsToTry.length - 1]) break;
+      }
+    }
+    console.error("Error calling Gemini:", lastError);
+    res.status(500).json({
+      error: lastError?.message || "API 사용 한도 초과. 잠시 후 다시 시도해 주세요.",
+    });
   });
 
   // Vite middleware for development
